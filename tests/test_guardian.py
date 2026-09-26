@@ -126,3 +126,42 @@ class TestWrap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPhaseLatencies(unittest.TestCase):
+    def test_phase_latencies_recorded(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = os.path.join(tmp.name, "a.jsonl")
+            guarded = wrap(echo_agent, audit_path=path)
+            guarded("hello")
+            phases = guarded.last_phase_latencies
+            self.assertEqual(set(phases),
+                             {"input_policy", "agent", "output_policy",
+                              "audit"})
+            for value in phases.values():
+                self.assertGreaterEqual(value, 0.0)
+            # also present in the audit payload
+            records = list(guarded.audit.iter_records())
+            call_records = [r for r in records if r["kind"] == "agent_call"]
+            self.assertEqual(len(call_records), 1)
+            payload_phases = call_records[0]["payload"]["phase_latency_ms"]
+            self.assertIn("agent", payload_phases)
+        finally:
+            tmp.cleanup()
+
+    def test_denial_records_partial_phases(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = os.path.join(tmp.name, "a.jsonl")
+            policy = PolicyEngine(blocked_phrases=["nope"])
+            guarded = wrap(echo_agent, policy=policy, audit_path=path)
+            with self.assertRaises(PolicyViolation):
+                guarded("nope nope")
+            denials = [r for r in guarded.audit.iter_records()
+                       if r["kind"] == "policy_denial"]
+            self.assertEqual(len(denials), 1)
+            self.assertIn("input_policy",
+                          denials[0]["payload"]["phase_latency_ms"])
+        finally:
+            tmp.cleanup()

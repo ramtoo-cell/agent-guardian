@@ -11,25 +11,34 @@ callable with the same signature.  Every call flows through, in order:
 4. **Output policy** — the response is inspected (optional).
 5. **Audit** — everything is appended to a hash-chained audit log.
 
-Policy denials raise :class:`~agent_guardian.policies.PolicyViolation`;
-budget overruns raise :class:`~agent_guardian.budgets.BudgetExceeded`.
+Per-phase wall-clock timings (input policy, agent execution, output policy,
+audit write) are recorded in the audit payload under ``"phase_latency_ms"``
+and exposed on the wrapper as ``last_phase_latencies`` — useful for finding
+which guardrail stage dominates latency.
+
+Policy denials raise :class:`~agent_guardian.exceptions.PolicyViolation`;
+budget overruns raise :class:`~agent_guardian.exceptions.BudgetExceeded`.
 Both are recorded in the audit log before being raised.
 """
 
 from __future__ import annotations
 
 import functools
+import logging
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable
 
 from .audit import AuditLog
-from .budgets import BudgetConfig, BudgetEnforcer, BudgetExceeded
-from .policies import PolicyDecision, PolicyEngine, PolicyViolation
+from .budgets import BudgetConfig, BudgetEnforcer
+from .exceptions import BudgetExceeded, PolicyViolation
+from .policies import PolicyDecision, PolicyEngine
 
-__all__ = ["wrap", "guard"]
+logger = logging.getLogger(__name__)
+
+__all__ = ["guard", "wrap"]
 
 
-def _coerce_policy(policy: Optional[PolicyEngine]) -> PolicyEngine:
+def _coerce_policy(policy: PolicyEngine | None) -> PolicyEngine:
     if policy is None:
         return PolicyEngine()
     if isinstance(policy, dict):
@@ -37,7 +46,7 @@ def _coerce_policy(policy: Optional[PolicyEngine]) -> PolicyEngine:
     return policy
 
 
-def _coerce_budgets(budgets: Optional[BudgetEnforcer]) -> BudgetEnforcer:
+def _coerce_budgets(budgets: BudgetEnforcer | None) -> BudgetEnforcer:
     if budgets is None:
         return BudgetEnforcer()
     if isinstance(budgets, dict):
@@ -50,10 +59,10 @@ def _coerce_budgets(budgets: Optional[BudgetEnforcer]) -> BudgetEnforcer:
 def wrap(
     agent_fn: Callable[..., str],
     *,
-    policy: Optional[PolicyEngine] = None,
-    budgets: Optional[BudgetEnforcer] = None,
+    policy: PolicyEngine | None = None,
+    budgets: BudgetEnforcer | None = None,
     audit_path: str = "agent_audit.jsonl",
-    agent_id: Optional[str] = None,
+    agent_id: str | None = None,
     check_output: bool = True,
 ) -> Callable[..., str]:
     """Wrap ``agent_fn`` with policy, budget, and audit guardrails.
@@ -77,7 +86,9 @@ def wrap(
         Also run the policy engine over agent outputs.
 
     Returns a callable with the same signature as ``agent_fn``.  The
-    wrapper exposes ``.policy``, ``.budgets`` and ``.audit`` attributes.
+    wrapper exposes ``.policy``, ``.budgets`` and ``.audit`` attributes, plus
+    ``.last_phase_latencies`` — a dict of per-phase timings (in
+    milliseconds) for the most recent call.
     """
     engine = _coerce_policy(policy)
     enforcer = _coerce_budgets(budgets)
@@ -89,6 +100,7 @@ def wrap(
         "budgets": enforcer.snapshot()["limits"],
         "check_output": check_output,
     })
+    logger.info("guardian wrapped agent %r (audit: %s)", name, audit_path)
 
     @functools.wraps(agent_fn)
     def guarded(prompt: str, **kwargs: Any) -> str:
@@ -96,7 +108,9 @@ def wrap(
             prompt = str(prompt)
 
         # 1. input policy -------------------------------------------------
+        t0 = time.perf_counter()
         decision_in: PolicyDecision = engine.check(prompt)
+        policy_in_ms = (time.perf_counter() - t0) * 1000.0
         enforcer.check_step()
         enforcer.record_text(decision_in.text)
         if not decision_in.allowed:
@@ -105,32 +119,46 @@ def wrap(
                 "reason": decision_in.reason,
                 "findings": [f.__dict__ for f in decision_in.findings],
                 "prompt_chars": len(prompt),
+                "phase_latency_ms": {"input_policy": round(policy_in_ms, 3)},
             })
+            logger.warning("agent %r: input denied (%s)", name,
+                           decision_in.reason)
             raise PolicyViolation(
                 f"input blocked by policy: {decision_in.reason}", decision_in)
 
         # 2+3. run the agent under budget supervision --------------------
         started = time.monotonic()
+        t0 = time.perf_counter()
         try:
             output = agent_fn(decision_in.text, **kwargs)
         except BudgetExceeded:
             raise
-        except Exception as exc:  # noqa: BLE001 - log agent crashes too
+        except Exception as exc:
+            agent_ms = (time.perf_counter() - t0) * 1000.0
             log.append("agent_error", {
                 "error": f"{type(exc).__name__}: {exc}",
                 "latency_seconds": round(time.monotonic() - started, 3),
                 "budgets": enforcer.snapshot(),
+                "phase_latency_ms": {
+                    "input_policy": round(policy_in_ms, 3),
+                    "agent": round(agent_ms, 3),
+                },
             })
+            logger.exception("agent %r raised %s", name, type(exc).__name__)
             raise
+        agent_ms = (time.perf_counter() - t0) * 1000.0
         latency = time.monotonic() - started
         output = "" if output is None else str(output)
         enforcer.record_text(output)
         enforcer.check_latency()
 
         # 4. output policy ------------------------------------------------
-        decision_out: Optional[PolicyDecision] = None
+        decision_out: PolicyDecision | None = None
+        policy_out_ms = 0.0
         if check_output:
+            t0 = time.perf_counter()
             decision_out = engine.check(output)
+            policy_out_ms = (time.perf_counter() - t0) * 1000.0
             if not decision_out.allowed:
                 log.append("policy_denial", {
                     "phase": "output",
@@ -138,13 +166,26 @@ def wrap(
                     "findings": [f.__dict__ for f in decision_out.findings],
                     "output_chars": len(output),
                     "budgets": enforcer.snapshot(),
+                    "phase_latency_ms": {
+                        "input_policy": round(policy_in_ms, 3),
+                        "agent": round(agent_ms, 3),
+                        "output_policy": round(policy_out_ms, 3),
+                    },
                 })
+                logger.warning("agent %r: output denied (%s)", name,
+                               decision_out.reason)
                 raise PolicyViolation(
                     f"output blocked by policy: {decision_out.reason}",
                     decision_out)
             output = decision_out.text
 
         # 5. audit ---------------------------------------------------------
+        phase_latencies = {
+            "input_policy": round(policy_in_ms, 3),
+            "agent": round(agent_ms, 3),
+            "output_policy": round(policy_out_ms, 3),
+        }
+        t0 = time.perf_counter()
         log.append("agent_call", {
             "prompt_chars": len(prompt),
             "output_chars": len(output),
@@ -153,21 +194,29 @@ def wrap(
             "output_findings": [f.__dict__ for f in
                                 (decision_out.findings if decision_out else [])],
             "budgets": enforcer.snapshot(),
+            "phase_latency_ms": phase_latencies,
         })
+        audit_ms = (time.perf_counter() - t0) * 1000.0
+        phase_latencies["audit"] = round(audit_ms, 3)
+        guarded.last_phase_latencies = phase_latencies  # type: ignore[attr-defined]
+        logger.debug("agent %r call ok: %d in-chars, %d out-chars, "
+                     "phases=%s", name, len(prompt), len(output),
+                     phase_latencies)
         return output
 
     # introspection hooks (used by tests and the CLI)
     guarded.policy = engine          # type: ignore[attr-defined]
     guarded.budgets = enforcer       # type: ignore[attr-defined]
     guarded.audit = log              # type: ignore[attr-defined]
+    guarded.last_phase_latencies = {}  # type: ignore[attr-defined]
     return guarded
 
 
 def guard(
-    policy: Optional[PolicyEngine] = None,
-    budgets: Optional[BudgetEnforcer] = None,
+    policy: PolicyEngine | None = None,
+    budgets: BudgetEnforcer | None = None,
     audit_path: str = "agent_audit.jsonl",
-    agent_id: Optional[str] = None,
+    agent_id: str | None = None,
     check_output: bool = True,
 ) -> Callable[[Callable[..., str]], Callable[..., str]]:
     """Decorator form of :func:`wrap`.

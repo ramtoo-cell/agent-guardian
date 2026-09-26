@@ -1,0 +1,17 @@
+# Policy for the customer-support example.
+#
+# Customers paste PII into chat all the time. This policy redacts it *before*
+# the agent ever sees the prompt, and blocks prompt-injection attempts that
+# try to make the agent reveal other customers' data.
+blocked_phrases:
+  - "wire transfer"        # never discuss wire transfers in chat
+redact_pii: true
+detect_injection: true
+deny_on_injection: true
+max_chars: 2000
+rules:
+  - id: no-other-customer-data
+    effect: deny
+    contains:
+      - "other customers"
+      - "another customer's"

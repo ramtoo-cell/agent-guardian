@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime as _datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .audit import verify_log
 
@@ -12,13 +12,23 @@ def _pct(score: float) -> str:
     return f"{score * 100:.1f}%"
 
 
-def render_report(scorecard: Dict[str, Any],
-                  audit_path: Optional[str] = None,
+def render_report(scorecard: dict[str, Any],
+                  audit_path: str | None = None,
+                  budgets: dict[str, Any] | None = None,
                   title: str = "Agent Governance Report") -> str:
     """Render ``scorecard`` (from :func:`agent_guardian.evals.run_evals`) as Markdown.
 
-    When ``audit_path`` is given, the report also includes the result of
-    verifying the hash-chained audit log at that path.
+    Args:
+        scorecard: The eval scorecard dict.
+        audit_path: Optional audit log path; when given, the report includes
+            the result of verifying the hash chain at that path.
+        budgets: Optional :meth:`BudgetEnforcer.snapshot
+            <agent_guardian.budgets.BudgetEnforcer.snapshot>` dict; when
+            given, the report includes a budget-usage section.
+        title: Report title.
+
+    Returns:
+        The report as a Markdown string.
     """
     now = _datetime.datetime.now().isoformat(timespec="seconds")
     total = scorecard.get("total", 0)
@@ -74,6 +84,22 @@ def render_report(scorecard: Dict[str, Any],
             f"- **Records checked:** {verification.records_checked}",
             f"- **Chain intact:** {'yes' if verification.ok else 'NO'}",
             f"- **Details:** {verification.message}",
+            "",
+        ]
+
+    if budgets:
+        limits = budgets.get("limits", {}) or {}
+        lines += [
+            "## Budgets",
+            "",
+            f"- **Steps used:** {budgets.get('steps')}",
+            f"- **Tokens used (est.):** {budgets.get('tokens')}",
+            f"- **Cost used (USD):** {budgets.get('cost_usd')}",
+            f"- **Elapsed:** {budgets.get('elapsed_seconds')}s",
+            (f"- **Limits:** `max_steps={limits.get('max_steps')}`, "
+             f"`max_tokens={limits.get('max_tokens')}`, "
+             f"`max_cost_usd={limits.get('max_cost_usd')}`, "
+             f"`max_latency_seconds={limits.get('max_latency_seconds')}`"),
             "",
         ]
 

@@ -1,0 +1,1 @@
+{"blocked_phrases":["drop table","rm -rf /","format c:"],"deny_on_injection":true,"detect_injection":true,"max_chars":500,"redact_pii":true,"rules":[{"contains":["production database","prod deploy"],"effect":"deny","id":"no-prod-writes"}]}

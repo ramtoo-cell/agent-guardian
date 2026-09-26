@@ -16,9 +16,28 @@ violation should become an exception.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any
+
+from .exceptions import ConfigurationError, PolicyViolation
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "INJECTION_PATTERNS",
+    "PII_PATTERNS",
+    "ConfigurationError",
+    "PolicyDecision",
+    "PolicyEngine",
+    "PolicyFinding",
+    "PolicyViolation",
+    "detect_injection",
+    "redact_pii",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -27,39 +46,56 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 @dataclass
 class PolicyFinding:
-    """One thing the policy engine noticed while inspecting text."""
-    kind: str      # 'length' | 'blocked_phrase' | 'rule' | 'injection' | 'pii'
+    """One thing the policy engine noticed while inspecting text.
+
+    Attributes:
+        kind: ``'length'`` | ``'blocked_phrase'`` | ``'rule'`` |
+            ``'injection'`` | ``'pii'``.
+        detail: Human-readable description of the finding.
+        redacted: True when this finding corresponds to text that was
+            replaced with a ``[REDACTED:<KIND>]`` placeholder.
+    """
+
+    kind: str
     detail: str
     redacted: bool = False
 
 
 @dataclass
 class PolicyDecision:
-    """The verdict of a single policy check."""
+    """The verdict of a single policy check.
+
+    Attributes:
+        allowed: Whether the text passed the policy.
+        reason: Short machine-readable reason (``"ok"`` when allowed).
+        text: The checked text — with PII redacted when redaction ran.
+        findings: Every :class:`PolicyFinding` produced during the check.
+    """
+
     allowed: bool
     reason: str
     text: str                          # redacted text when PII redaction ran
-    findings: List[PolicyFinding] = field(default_factory=list)
+    findings: list[PolicyFinding] = field(default_factory=list)
 
-    def raise_if_denied(self) -> "PolicyDecision":
-        """Raise :class:`PolicyViolation` unless the text was allowed."""
+    def raise_if_denied(self) -> PolicyDecision:
+        """Raise :class:`PolicyViolation` unless the text was allowed.
+
+        Returns:
+            ``self`` when allowed.
+
+        Raises:
+            PolicyViolation: When ``allowed`` is False.
+        """
         if not self.allowed:
             raise PolicyViolation(self.reason, self)
         return self
-
-
-class PolicyViolation(Exception):
-    """Raised when inspected text violates the active policy."""
-    def __init__(self, message: str, decision: Optional[PolicyDecision] = None):
-        super().__init__(message)
-        self.decision = decision
 
 
 # ---------------------------------------------------------------------------
 # PII detection / redaction
 # ---------------------------------------------------------------------------
 
-PII_PATTERNS: Dict[str, "re.Pattern[str]"] = {
+PII_PATTERNS: dict[str, re.Pattern[str]] = {
     "email": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
     "phone": re.compile(r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}"),
     "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
@@ -71,15 +107,15 @@ PII_PATTERNS: Dict[str, "re.Pattern[str]"] = {
 }
 
 
-def redact_pii(text: str) -> Tuple[str, List[PolicyFinding]]:
+def redact_pii(text: str) -> tuple[str, list[PolicyFinding]]:
     """Replace PII matches with ``[REDACTED:<KIND>]`` placeholders.
 
     Returns the redacted text and one finding per replacement.
     """
-    findings: List[PolicyFinding] = []
+    findings: list[PolicyFinding] = []
     for kind, pattern in PII_PATTERNS.items():
 
-        def _repl(match: "re.Match[str]", kind: str = kind) -> str:
+        def _repl(match: re.Match[str], kind: str = kind) -> str:
             findings.append(PolicyFinding(
                 kind="pii", detail=f"{kind} redacted", redacted=True))
             return f"[REDACTED:{kind.upper()}]"
@@ -92,7 +128,7 @@ def redact_pii(text: str) -> Tuple[str, List[PolicyFinding]]:
 # Prompt-injection heuristics
 # ---------------------------------------------------------------------------
 
-INJECTION_PATTERNS: List["re.Pattern[str]"] = [
+INJECTION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions?", re.I),
     re.compile(r"disregard\s+(all\s+)?(previous|prior|above|your)\s+[a-z]+", re.I),
     re.compile(r"you\s+are\s+now\s+[a-z]", re.I),
@@ -105,7 +141,7 @@ INJECTION_PATTERNS: List["re.Pattern[str]"] = [
 ]
 
 
-def detect_injection(text: str) -> List[PolicyFinding]:
+def detect_injection(text: str) -> list[PolicyFinding]:
     """Return one finding per injection heuristic that fires."""
     findings = []
     for pattern in INJECTION_PATTERNS:
@@ -134,11 +170,11 @@ def detect_injection(text: str) -> List[PolicyFinding]:
 # ``context`` mapping passed to :meth:`PolicyEngine.check`).  Deny rules win
 # over allow rules.
 
-Rule = Dict[str, Any]
+Rule = dict[str, Any]
 
 
 def _rule_matches(rule: Rule, text: str,
-                  context: Optional[Mapping[str, Any]]) -> bool:
+                  context: Mapping[str, Any] | None) -> bool:
     """True when the rule's textual and/or context matchers all fire."""
     lowered = text.lower()
     text_hit = False
@@ -188,24 +224,24 @@ class PolicyEngine:
 
     def __init__(
         self,
-        blocked_phrases: Optional[Sequence[str]] = None,
+        blocked_phrases: Sequence[str] | None = None,
         redact_pii: bool = True,
         detect_injection: bool = True,
         deny_on_injection: bool = True,
-        rules: Optional[Sequence[Rule]] = None,
-        max_chars: Optional[int] = None,
+        rules: Sequence[Rule] | None = None,
+        max_chars: int | None = None,
     ) -> None:
         self.blocked_phrases = [p.lower() for p in (blocked_phrases or [])]
         self.redact_pii = redact_pii
         self.detect_injection = detect_injection
         self.deny_on_injection = deny_on_injection
-        self.rules: List[Rule] = list(rules or [])
+        self.rules: list[Rule] = list(rules or [])
         self.max_chars = max_chars
 
     # -- construction helpers -------------------------------------------
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "PolicyEngine":
+    def from_dict(cls, data: Mapping[str, Any]) -> PolicyEngine:
         """Build an engine from a plain dict (e.g. parsed ``policy.json``)."""
         return cls(
             blocked_phrases=data.get("blocked_phrases"),
@@ -217,19 +253,107 @@ class PolicyEngine:
         )
 
     @classmethod
-    def from_json(cls, path: str) -> "PolicyEngine":
-        """Build an engine from a ``policy.json`` file."""
-        with open(path, "r", encoding="utf-8") as fh:
-            return cls.from_dict(json.load(fh))
+    def from_file(cls, path: str) -> PolicyEngine:
+        """Build an engine from a policy file.
+
+        The format is chosen by extension:
+
+        * ``.json`` — parsed with the standard library.
+        * ``.yaml`` / ``.yml`` — parsed with PyYAML, which must be
+          installed separately (``pip install pyyaml``); the core library
+          stays dependency-free.
+
+        Args:
+            path: Path to the policy file.
+
+        Returns:
+            A :class:`PolicyEngine` built from the file's contents.
+
+        Raises:
+            ConfigurationError: If the extension is unsupported, the file
+                cannot be read or parsed, or PyYAML is missing for YAML.
+        """
+        suffix = os.path.splitext(path)[1].lower()
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = fh.read()
+        except OSError as exc:
+            raise ConfigurationError(
+                f"cannot read policy file {path!r}: {exc}") from exc
+
+        if suffix == ".json":
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ConfigurationError(
+                    f"policy file {path!r} is not valid JSON: {exc}") from exc
+        elif suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+            except ImportError as exc:
+                raise ConfigurationError(
+                    f"cannot load YAML policy {path!r}: PyYAML is not "
+                    f"installed (pip install pyyaml)") from exc
+            try:
+                data = yaml.safe_load(raw)
+            except Exception as exc:  # yaml.YAMLError
+                raise ConfigurationError(
+                    f"policy file {path!r} is not valid YAML: {exc}") from exc
+        else:
+            raise ConfigurationError(
+                f"unsupported policy file type {suffix!r} for {path!r}: "
+                f"use .json, .yaml, or .yml")
+        if not isinstance(data, dict):
+            raise ConfigurationError(
+                f"policy file {path!r} must contain a mapping at the top "
+                f"level, got {type(data).__name__}")
+        logger.info("loaded policy from %s", path)
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_json(cls, path: str) -> PolicyEngine:
+        """Build an engine from a ``policy.json`` file.
+
+        Equivalent to :meth:`from_file` for JSON files; kept for
+        backwards compatibility.
+        """
+        return cls.from_file(path)
 
     # -- inspection ------------------------------------------------------
 
     def check(self, text: str,
-              context: Optional[Mapping[str, Any]] = None) -> PolicyDecision:
-        """Inspect ``text`` and return a :class:`PolicyDecision` (never raises)."""
+              context: Mapping[str, Any] | None = None) -> PolicyDecision:
+        """Inspect ``text`` and return a :class:`PolicyDecision`.
+
+        This method never raises — denials are reported in the returned
+        decision.  Use :meth:`check_or_raise` when a violation should
+        become an exception.
+
+        Args:
+            text: The text to inspect (non-strings are coerced with
+                ``str()``).
+            context: Optional mapping consulted by declarative rules with
+                ``context_equals`` matchers.
+
+        Returns:
+            The :class:`PolicyDecision` verdict.
+        """
+        decision = self._check_inner(text, context)
+        if decision.allowed:
+            logger.debug("policy allow: %s (%d findings)",
+                         decision.reason, len(decision.findings))
+        else:
+            logger.warning("policy deny: %s (%d findings)",
+                           decision.reason, len(decision.findings))
+        return decision
+
+    def _check_inner(self, text: str,
+                     context: Mapping[str, Any] | None = None
+                     ) -> PolicyDecision:
+        """Policy inspection body (logging-free; see :meth:`check`)."""
         if not isinstance(text, str):
             text = str(text)
-        findings: List[PolicyFinding] = []
+        findings: list[PolicyFinding] = []
 
         # 1. length cap
         if self.max_chars is not None and len(text) > self.max_chars:
@@ -256,7 +380,7 @@ class PolicyEngine:
                 text=text, findings=findings)
 
         # 3. declarative rules (deny wins)
-        denied_by: Optional[str] = None
+        denied_by: str | None = None
         for rule in self.rules:
             if _rule_matches(rule, text, context):
                 effect = str(rule.get("effect", "deny")).lower()
@@ -289,7 +413,7 @@ class PolicyEngine:
             allowed=True, reason="ok", text=redacted_text, findings=findings)
 
     def check_or_raise(self, text: str,
-                       context: Optional[Mapping[str, Any]] = None) -> str:
+                       context: Mapping[str, Any] | None = None) -> str:
         """Like :meth:`check` but raises :class:`PolicyViolation` on denial.
 
         Returns the (possibly redacted) text when allowed.

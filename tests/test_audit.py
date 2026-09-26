@@ -36,7 +36,7 @@ class TestAuditLog(unittest.TestCase):
         log.append("agent_call", {"output": "original"})
         log.append("agent_call", {"output": "second"})
         # tamper with the first record's payload
-        with open(self.path, "r", encoding="utf-8") as fh:
+        with open(self.path, encoding="utf-8") as fh:
             lines = fh.readlines()
         record = json.loads(lines[0])
         record["payload"]["output"] = "forged"
@@ -52,7 +52,7 @@ class TestAuditLog(unittest.TestCase):
         log.append("a", {})
         log.append("b", {})
         log.append("c", {})
-        with open(self.path, "r", encoding="utf-8") as fh:
+        with open(self.path, encoding="utf-8") as fh:
             lines = fh.readlines()
         with open(self.path, "w", encoding="utf-8") as fh:
             fh.writelines([lines[0], lines[2]])  # drop the middle record

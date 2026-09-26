@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package + dev tools
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src tests examples benchmarks
+
+      - name: Run test suite with coverage
+        run: coverage run -m unittest discover -s tests
+
+      - name: Coverage report
+        run: coverage report
+
+      - name: Run examples end-to-end
+        run: |
+          python examples/customer_support.py
+          python examples/coding_agent.py
+          python examples/red_team.py
+
+      - name: Benchmark smoke test
+        run: python benchmarks/bench.py --calls 100 --appends 100 --repeats 1
+
+      - name: CLI smoke test
+        run: |
+          agent-guardian --help
+          printf 'def agent(prompt: str) -> str:\n    return "demo: " + prompt\n' > /tmp/demo_agent.py
+          cd /tmp && agent-guardian audit --target demo_agent:agent --max-steps 20 --out /tmp/smoke_report.md
+          agent-guardian verify-log --path /tmp/agent_audit.jsonl
+
+      - name: Build package
+        run: python -m build

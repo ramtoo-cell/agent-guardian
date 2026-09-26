@@ -1,9 +1,12 @@
 """Tests for agent_guardian.policies."""
 import json
 import os
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
+from agent_guardian.exceptions import ConfigurationError
 from agent_guardian.policies import (
     PolicyEngine,
     PolicyViolation,
@@ -150,3 +153,90 @@ class TestPolicyLoading(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPolicyFromFile(unittest.TestCase):
+    def _write(self, tmp, name, content):
+        path = os.path.join(tmp.name, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return path
+
+    def test_from_json_file(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = self._write(
+                tmp, "p.json",
+                '{"blocked_phrases": ["nope"], "max_chars": 50}')
+            engine = PolicyEngine.from_file(path)
+            self.assertFalse(engine.check("this contains nope").allowed)
+            self.assertFalse(engine.check("x" * 51).allowed)
+            self.assertTrue(engine.check("fine").allowed)
+        finally:
+            tmp.cleanup()
+
+    def test_from_json_alias(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = self._write(tmp, "p.json", '{"max_chars": 5}')
+            engine = PolicyEngine.from_json(path)
+            self.assertFalse(engine.check("123456").allowed)
+        finally:
+            tmp.cleanup()
+
+    def test_from_yaml_file(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML not installed")
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = self._write(
+                tmp, "p.yaml",
+                "blocked_phrases:\n  - nope\nredact_pii: false\n")
+            engine = PolicyEngine.from_file(path)
+            self.assertFalse(engine.check("nope here").allowed)
+            self.assertFalse(engine.redact_pii)
+        finally:
+            tmp.cleanup()
+
+    def test_from_yaml_without_pyyaml(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = self._write(tmp, "p.yaml", "blocked_phrases: []\n")
+            with (mock.patch.dict(sys.modules, {"yaml": None}),
+                  self.assertRaises(ConfigurationError)):
+                PolicyEngine.from_file(path)
+        finally:
+            tmp.cleanup()
+
+    def test_unsupported_extension(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = self._write(tmp, "p.toml", "x = 1\n")
+            with self.assertRaises(ConfigurationError):
+                PolicyEngine.from_file(path)
+        finally:
+            tmp.cleanup()
+
+    def test_missing_file(self):
+        with self.assertRaises(ConfigurationError):
+            PolicyEngine.from_file("/nonexistent/policy.json")
+
+    def test_invalid_json(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = self._write(tmp, "p.json", "{not json")
+            with self.assertRaises(ConfigurationError):
+                PolicyEngine.from_file(path)
+        finally:
+            tmp.cleanup()
+
+    def test_non_mapping_top_level(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = self._write(tmp, "p.json", "[1, 2, 3]")
+            with self.assertRaises(ConfigurationError):
+                PolicyEngine.from_file(path)
+        finally:
+            tmp.cleanup()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-guardian"
-version = "0.1.0"
+version = "0.2.0"
 description = "Governance sidecar for AI agents: policy enforcement, budgets, tamper-evident audit logs, and safety evals"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -27,5 +27,36 @@ classifiers = [
 [project.scripts]
 agent-guardian = "agent_guardian.cli:main"
 
+[project.optional-dependencies]
+dev = ["ruff>=0.1", "build", "coverage", "pyyaml"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "B", "UP", "C4", "SIM", "ISC", "RUF"]
+# E501 (line length) is a formatting concern; ruff format is not enforced
+# in CI, so long lines are left to reviewer judgment.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# examples/ and benchmarks/ bootstrap sys.path before importing the package.
+"examples/*" = ["E402"]
+"benchmarks/*" = ["E402"]
+
+[tool.coverage.run]
+source = ["agent_guardian"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "raise AssertionError",
+]
+fail_under = 85
+precision = 1
+show_missing = true

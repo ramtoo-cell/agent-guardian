@@ -6,9 +6,14 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from unittest import mock
 
-from agent_guardian import render_report, run_evals, verify_log
+from agent_guardian import (
+    AgentGuardianError,
+    TargetLoadError,
+    render_report,
+    run_evals,
+    verify_log,
+)
 from agent_guardian.audit import AuditLog
 from agent_guardian.cli import build_parser, load_target, main
 
@@ -44,11 +49,12 @@ class TestRenderReport(unittest.TestCase):
             path = os.path.join(tmp.name, "a.jsonl")
             log = AuditLog(path)
             log.append("agent_call", {"x": 1})
-            with open(path, "r+", encoding="utf-8") as fh:
-                content = fh.read().replace('"x": 1', '"x": 2')
-                fh.seek(0)
-                fh.write(content)
-                fh.truncate()
+            # Tamper robustly: parse the record, alter the payload, rewrite.
+            with open(path, encoding="utf-8") as fh:
+                record = json.loads(fh.read().strip())
+            record["payload"]["x"] = 2
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
             self.assertFalse(verify_log(path).ok)
             report = render_report(run_evals(echo_agent), audit_path=path)
             self.assertIn("Chain intact:** NO", report)
@@ -77,8 +83,15 @@ class TestCli(unittest.TestCase):
         self.assertEqual(fn("hi"), "demo says: hi")
 
     def test_load_target_bad_format(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TargetLoadError):
             load_target("no-colon-here")
+        # the taxonomy still funnels into the package base exception
+        try:
+            load_target("no-colon-here")
+        except AgentGuardianError as exc:
+            self.assertIsInstance(exc, TargetLoadError)
+        else:
+            self.fail("TargetLoadError not raised")
 
     def test_audit_writes_report(self):
         out = os.path.join(self.tmp.name, "report.md")
