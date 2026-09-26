@@ -14,9 +14,9 @@ yourself):
 
     | benchmark                       | result              |
     |---------------------------------|---------------------|
-    | guarded call overhead¹          | ~250–600 µs         |
-    | audit append throughput         | ~2,000–7,000 app/s  |
-    | red-team eval suite (12 prompts)| ~2–6 ms             |
+    | guarded call overhead (1)       | ~250-600 us         |
+    | audit append throughput         | ~2,000-7,000 app/s  |
+    | red-team eval suite (12 prompts)| ~2-6 ms             |
 """
 
 import argparse
