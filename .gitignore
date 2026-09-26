@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtualenvs
+.venv/
+venv/
+.env/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Audit logs produced during local runs
+*.jsonl
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
