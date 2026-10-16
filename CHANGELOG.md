@@ -6,6 +6,17 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `agent_guardian.reasoning_evals`: 30 hand-written conceptual-reasoning
+  eval cases across three families — contract-clause interpretation
+  (allow/deny/ambiguous with cited rationale), policy trade-offs (graded
+  on reasoning quality, verdict open), and incentive/mechanism-design
+  analysis. `run_reasoning_evals(agent_fn)` returns a scorecard with pass
+  rate, per-family breakdown, confidence-vs-accuracy calibration, and a
+  failure taxonomy. Grading is keyword-heuristic (documented limitations);
+  scores are a regression signal, not a certificate. Also exported at top
+  level as `CONCEPTUAL_REASONING_PACK` / `run_reasoning_evals`.
+
 ## [0.2.0] - 2026-09-26
 
 ### Added

@@ -39,10 +39,12 @@ from .policies import (
     redact_pii,
 )
 from .report import render_report
+from .reasoning_evals import CONCEPTUAL_REASONING_PACK, run_reasoning_evals
 
 __version__ = "0.2.0"
 
 __all__ = [
+    "CONCEPTUAL_REASONING_PACK",
     "RED_TEAM_PACK",
     "AgentGuardianError",
     "AuditError",
@@ -66,6 +68,7 @@ __all__ = [
     "redact_pii",
     "render_report",
     "run_evals",
+    "run_reasoning_evals",
     "verify_log",
     "wrap",
 ]
